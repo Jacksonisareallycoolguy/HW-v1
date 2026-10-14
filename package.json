@@ -1,0 +1,8 @@
+{
+  "name": "canvas-due",
+  "version": "1.0.0",
+  "description": "Personal Canvas due-date tracker with auto-refresh from your calendar feed link",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}

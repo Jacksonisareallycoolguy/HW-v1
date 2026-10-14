@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1f6b52">
+<title>What's due</title>
+<style>
+:root{--bg:#eef1ee;--surface:#fbfcfb;--ink:#17201c;--mute:#5d6b63;--line:#d5dcd6;--accent:#1f6b52;--on:#fff;--late:#b3341f;--soon:#9a5b00;--done:#8a968f;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#121815;--surface:#1a221e;--ink:#e6ede8;--mute:#92a198;--line:#2a352f;--accent:#58c29b;--on:#0c1511;--late:#ff8a73;--soon:#f0b45a;--done:#677269;color-scheme:dark}}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+main{max-width:640px;margin:0 auto;padding:20px 16px 48px}
+h1{font:700 34px/1.1 Georgia,"Times New Roman",serif;margin:8px 0 4px;letter-spacing:-.01em}
+.sub{color:var(--mute);margin:0 0 18px}
+h2{font-size:15px;margin:26px 0 8px;display:flex;gap:8px;align-items:center}
+h2 span{color:var(--mute);font-weight:400}
+.late h2{color:var(--late)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px}
+input[type=url],input[type=password]{width:100%;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:11px;font:16px system-ui;margin-top:8px}
+button{font:600 15px system-ui;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:var(--on);padding:10px 14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center}
+.tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+select{padding:9px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:15px system-ui;max-width:100%}
+label.chk{display:flex;gap:6px;align-items:center;color:var(--mute);font-size:14px}
+.item{display:grid;grid-template-columns:auto 1fr;gap:12px;padding:12px 14px;background:var(--surface);border:1px solid var(--line);border-radius:10px;margin-bottom:8px}
+.item input{width:22px;height:22px;margin-top:2px;accent-color:var(--accent)}
+.t{font-weight:600;overflow-wrap:anywhere}
+.t a{color:inherit;text-decoration-color:var(--line);text-underline-offset:3px}
+.meta{color:var(--mute);font-size:14px;margin-top:2px}
+.due{font-weight:600}.due.late{color:var(--late)}.due.soon{color:var(--soon)}
+.item.done .t{text-decoration:line-through;color:var(--done)}.item.done{opacity:.7}
+.empty{color:var(--mute);padding:18px 0}
+.help{color:var(--mute);font-size:14px;margin:0}
+.err{color:var(--late);margin:8px 0 0;font-size:14px}
+.status{color:var(--mute);font-size:13px;margin-top:20px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>What's due</h1>
+<p class="sub" id="sub">Add your Canvas calendar link to see everything in one list.</p>
+
+<section class="card" id="setup">
+  <p class="help">In Canvas, open Calendar, then Calendar Feed, and copy the link. It is stored only on this device.</p>
+  <input type="url" id="link" placeholder="https://yourschool.instructure.com/feeds/calendars/user_….ics" aria-label="Canvas calendar feed link" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <input type="password" id="pass" placeholder="Passcode" aria-label="Passcode" autocomplete="off" hidden>
+  <div class="row"><button id="save">Save and load</button><button class="ghost" id="cancel" hidden>Cancel</button></div>
+  <div class="err" id="serr" role="alert"></div>
+</section>
+
+<section id="app" hidden>
+  <div class="tools">
+    <select id="course" aria-label="Filter by course"></select>
+    <label class="chk"><input type="checkbox" id="hide"> Hide done</label>
+    <button class="ghost" id="refresh">Refresh</button>
+    <button class="ghost" id="change">Change link</button>
+  </div>
+  <div class="err" id="rerr" role="alert"></div>
+  <div id="list"></div>
+  <div class="status" id="status"></div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const K={link:'due.link',pass:'due.pass',ics:'due.ics',at:'due.at',done:'due.done'};
+const REFRESH_MS=5*60*1000;
+let events=[],done={},lastFetch=0,needsPass=false;
+const sget=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
+const sset=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+
+function unfold(t){return t.replace(/\r?\n[ \t]/g,'')}
+function unesc(s){return s.replace(/\\n/gi,' ').replace(/\\([,;\\])/g,'$1').trim()}
+function pd(v){const m=v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?$/);if(!m)return null;
+  const [,y,mo,d,h,mi,s,z]=m;
+  if(!h)return{date:new Date(+y,+mo-1,+d,23,59),allDay:true};
+  return{date:z?new Date(Date.UTC(+y,+mo-1,+d,+h,+mi,+s)):new Date(+y,+mo-1,+d,+h,+mi,+s),allDay:false}}
+function parseICS(text){
+  const out=[];
+  for(const b of unfold(text).split('BEGIN:VEVENT').slice(1)){
+    const f={};
+    for(const line of b.split('END:VEVENT')[0].split(/\r?\n/)){
+      const i=line.indexOf(':');if(i<1)continue;
+      const k=line.slice(0,i).split(';')[0].toUpperCase();if(!(k in f))f[k]=line.slice(i+1)}
+    const ds=f.DTSTART&&pd(f.DTSTART.trim());if(!ds||!f.SUMMARY)continue;
+    let title=unesc(f.SUMMARY),course='Other';
+    const m=title.match(/\s*\[([^\]]+)\]\s*$/);if(m){course=m[1];title=title.slice(0,m.index)}
+    out.push({id:(f.UID||title+f.DTSTART).trim(),title,course,due:ds.date,allDay:ds.allDay,url:(f.URL||'').trim()})}
+  return out.sort((a,b)=>a.due-b.due)}
+
+const day0=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
+const fmtDay=d=>d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+const fmtTime=d=>d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+function rel(d,now){const n=Math.round((day0(d)-day0(now))/864e5);
+  if(n===0)return'Today';if(n===1)return'Tomorrow';if(n===-1)return'Yesterday';return n<0?-n+' days ago':'In '+n+' days'}
+
+function render(){
+  const now=new Date(),sel=$('course').value||'All',hide=$('hide').checked;
+  const today=day0(now),wk=new Date(today.getTime()+7*864e5);
+  const groups=[['Overdue','late',[]],['Today','',[]],['This week','',[]],['Later','',[]]];
+  for(const e of events){
+    if(sel!=='All'&&e.course!==sel)continue;
+    const isDone=!!done[e.id];
+    if(isDone&&(hide||e.due<now))continue;
+    const dd=day0(e.due);
+    const g=e.due<now?0:dd.getTime()===today.getTime()?1:dd<wk?2:3;
+    groups[g][2].push(e)}
+  const root=$('list');root.innerHTML='';let n=0;
+  for(const[name,cls,items]of groups){
+    if(!items.length)continue;n+=items.length;
+    const sec=document.createElement('div');sec.className=cls;
+    const h=document.createElement('h2');h.textContent=name+' ';const c=document.createElement('span');c.textContent=items.length;h.appendChild(c);sec.appendChild(h);
+    for(const e of items){
+      const late=e.due<now&&!done[e.id],soon=!late&&e.due-now<864e5;
+      const el=document.createElement('div');el.className='item'+(done[e.id]?' done':'');
+      const cb=document.createElement('input');cb.type='checkbox';cb.checked=!!done[e.id];cb.setAttribute('aria-label','Mark done: '+e.title);
+      cb.onchange=()=>{cb.checked?done[e.id]=1:delete done[e.id];sset(K.done,JSON.stringify(done));render()};
+      const box=document.createElement('div'),t=document.createElement('div');t.className='t';
+      if(/^https?:/i.test(e.url)){const a=document.createElement('a');a.href=e.url;a.target='_blank';a.rel='noopener noreferrer';a.textContent=e.title;t.appendChild(a)}else t.textContent=e.title;
+      const meta=document.createElement('div');meta.className='meta';
+      const du=document.createElement('span');du.className='due'+(late?' late':soon?' soon':'');du.textContent=rel(e.due,now);
+      meta.append(du,' \u2013 '+fmtDay(e.due)+(e.allDay?'':', '+fmtTime(e.due))+' \u2013 '+e.course);
+      box.append(t,meta);el.append(cb,box);sec.appendChild(el)}
+    root.appendChild(sec)}
+  if(!n){const p=document.createElement('p');p.className='empty';p.textContent='Nothing to show. Try another course or turn off Hide done.';root.appendChild(p)}
+  const open=events.filter(e=>!done[e.id]&&e.due>=now).length;
+  $('sub').textContent=open+' upcoming across '+new Set(events.map(e=>e.course)).size+' courses.';
+  const at=+sget(K.at)||0;
+  $('status').textContent=at?'Updated '+new Date(at).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'. Refreshes automatically.':''}
+
+function applyICS(text){
+  const ev=parseICS(text);if(!ev.length)return false;
+  events=ev;const prev=$('course').value;
+  const cs=['All',...[...new Set(ev.map(e=>e.course))].sort()];
+  $('course').replaceChildren(...cs.map(c=>{const o=document.createElement('option');o.textContent=c;return o}));
+  if(cs.includes(prev))$('course').value=prev;
+  $('setup').hidden=true;$('app').hidden=false;render();return true}
+
+async function pull(link,pass){
+  const h={'content-type':'application/json'};if(pass)h['x-passcode']=pass;
+  const r=await fetch('/api/feed',{method:'POST',headers:h,body:JSON.stringify({url:link})});
+  const body=await r.text();
+  if(!r.ok){let m='Could not load the calendar.';try{m=JSON.parse(body).error||m}catch(e){}throw new Error(m)}
+  return body}
+
+async function refresh(manual){
+  const link=sget(K.link);if(!link)return;
+  $('refresh').disabled=true;if(manual)$('rerr').textContent='';
+  try{
+    const text=await pull(link,sget(K.pass)||'');
+    if(!applyICS(text))throw new Error('No assignments found in that calendar.');
+    sset(K.ics,text);sset(K.at,String(Date.now()));lastFetch=Date.now();$('rerr').textContent='';render()}
+  catch(e){$('rerr').textContent=(e.message||'Could not refresh.')+(sget(K.ics)?' Showing the last saved copy.':'')}
+  finally{$('refresh').disabled=false}}
+
+$('save').onclick=async()=>{
+  const link=$('link').value.trim();$('serr').textContent='';
+  if(!link){$('serr').textContent='Paste your calendar link first.';return}
+  if(needsPass&&!$('pass').value){$('serr').textContent='Enter the passcode.';return}
+  $('save').disabled=true;
+  try{
+    const text=await pull(link,$('pass').value);
+    if(!applyICS(text))throw new Error('No assignments found in that calendar.');
+    sset(K.link,link);sset(K.pass,$('pass').value);sset(K.ics,text);sset(K.at,String(Date.now()));lastFetch=Date.now();render()}
+  catch(e){$('serr').textContent=e.message}
+  finally{$('save').disabled=false}};
+$('change').onclick=()=>{$('app').hidden=true;$('setup').hidden=false;$('cancel').hidden=false;$('link').value=sget(K.link)||''};
+$('cancel').onclick=()=>{$('setup').hidden=true;$('app').hidden=false;$('cancel').hidden=true};
+$('refresh').onclick=()=>refresh(true);
+$('course').onchange=render;$('hide').onchange=render;
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&sget(K.link)&&Date.now()-lastFetch>60000)refresh(false)});
+setInterval(()=>{if(!document.hidden&&sget(K.link))refresh(false)},REFRESH_MS);
+setInterval(()=>{if(!$('app').hidden)render()},60000);
+
+(async()=>{
+  try{done=JSON.parse(sget(K.done)||'{}')}catch(e){done={}}
+  try{const c=await(await fetch('/api/config')).json();needsPass=!!c.needsPasscode;$('pass').hidden=!needsPass}catch(e){}
+  const cached=sget(K.ics);if(cached)applyICS(cached);
+  if(sget(K.link))refresh(false)})();
+</script>
+</body>
+</html>
